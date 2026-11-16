@@ -41,6 +41,8 @@ struct MainView: View {
 
 	@State private var lastHostShown: String?
 
+	@Environment(\.horizontalSizeClass) var horizontalSizeClass
+
 	var busy: Bool {
 		isConnecting || inSettings
 	}
@@ -50,6 +52,70 @@ struct MainView: View {
 	}
 
 	var body: some View {
+		if #available(iOS 26, *) {
+			modernBody
+		} else {
+			legacyBody
+		}
+	}
+
+	// MARK: Native (iOS 26+): TabView + NavigationStack, system Liquid Glass bars
+
+	/// Tab bar on the outer display / compact width, sidebar on the inner display / regular width.
+	/// On iPhone Duo the system moves the bars to the trailing edge; nothing here overrides that.
+	@available(iOS 26, *)
+	var modernBody: some View {
+		ZStack {
+			TabView(selection: $page) {
+				Tab("Hosts", systemImage: "desktopcomputer", value: Page.hosts) {
+					NavigationStack {
+						ScrollView(.vertical) { hostsContent }
+							.refreshable { await refreshHostsAndWait() }
+							.background(Color("BackgroundGray").ignoresSafeArea())
+							.navigationTitle("Hosts")
+							.navigationSubtitle(hostCountStr)
+							.modifier(MainToolbar(showsRefresh: true, isRefreshing: isRefreshing, refresh: refreshHosts, openSettings: { inSettings = true }, logout: { showLogoutAlert = true }))
+					}
+				}
+				Tab("Friends", systemImage: "person.2.fill", value: Page.friends) {
+					NavigationStack {
+						ScrollView(.vertical) { friendsContent }
+							.background(Color("BackgroundGray").ignoresSafeArea())
+							.navigationTitle("Friends")
+							.navigationSubtitle(friendCountStr)
+							.modifier(MainToolbar(showsRefresh: false, isRefreshing: false, refresh: {}, openSettings: { inSettings = true }, logout: { showLogoutAlert = true }))
+					}
+				}
+			}
+			.tabViewStyle(.sidebarAdaptable)
+			.disabled(isConnecting)
+			.alert("Are you sure you want to logout?", isPresented: $showLogoutAlert) {
+				Button("Logout", role: .destructive, action: logout)
+				Button("Cancel", role: .cancel) {}
+			}
+
+			if isConnecting {
+				connectingOverlay
+			}
+		}
+		.alert(baseAlertText, isPresented: $showBaseAlert) {}
+		.settingsPresentation(isPresented: $inSettings)
+		.foregroundColor(Color("Foreground"))
+		.onAppear(perform: initView)
+		.onDisappear { ParsecBackgroundManager.shared.onShortcutReconnect = nil }
+	}
+
+	@available(iOS 26, *)
+	func refreshHostsAndWait() async {
+		refreshHosts()
+		while isRefreshing {
+			try? await Task.sleep(for: .milliseconds(100))
+		}
+	}
+
+	// MARK: Legacy (iOS 14-18): hand-built bars
+
+	var legacyBody: some View {
 		ZStack {
 			// Background
 			Rectangle()
@@ -68,16 +134,6 @@ struct MainView: View {
 						.alert(isPresented: $showLogoutAlert) {
 							Alert(title: Text("Are you sure you want to logout?"), primaryButton: .destructive(Text("Logout"), action: logout), secondaryButton: .cancel(Text("Cancel")))
 						}
-//					Button(action: {
-//						if let c = controller
-//						{
-//							c.setView(.test)
-//
-//						}
-//						
-//					}, label: {
-//						Text("Show TestView")
-//					})
 
 					Spacer()
 					HStack {
@@ -116,253 +172,16 @@ struct MainView: View {
 
 				ZStack {
 					// Hosts page
-					ScrollView(.vertical) {
-						VStack {
-							if sessionExpired {
-								HStack {
-									Text("Your Parsec session expired")
-										.foregroundColor(Color("Foreground"))
-									Spacer()
-									Button(action: logout) {
-										Text("Sign In")
-											.fontWeight(.semibold)
-											.foregroundColor(Color("AccentColor"))
-											.frame(minWidth: 44, minHeight: 44)
-											.contentShape(Rectangle())
-									}
-								}
-								.padding(.horizontal, 12)
-								.padding(.vertical, 2)
-								.background(Rectangle().fill(Color("BackgroundPrompt")))
-								.cornerRadius(8)
-								.frame(maxWidth: 400)
-								.padding(.horizontal)
-							}
-							if let refreshError = refreshError {
-								HStack {
-									Text(refreshError)
-										.foregroundColor(Color("Foreground"))
-									Spacer()
-									Button(action: refreshHosts) {
-										Text("Retry")
-											.fontWeight(.semibold)
-											.foregroundColor(Color("AccentColor"))
-											.frame(minWidth: 44, minHeight: 44)
-											.contentShape(Rectangle())
-									}
-								}
-								.padding(.horizontal, 12)
-								.padding(.vertical, 2)
-								.background(Rectangle().fill(Color("BackgroundPrompt")))
-								.cornerRadius(8)
-								.frame(maxWidth: 400)
-								.padding(.horizontal)
-							}
-							if isRefreshing {
-								HStack(spacing: 8) {
-									ActivityIndicator(isAnimating: $isRefreshing, style: .medium, tint: UIColor(named: "Foreground") ?? .white)
-										.frame(width: 20, height: 20)
-									Text("Refreshing hosts...")
-										.foregroundColor(Color("Foreground"))
-								}
-							} else if !refreshTime.isEmpty {
-								Text(refreshTime)
-									.multilineTextAlignment(.center)
-									.opacity(0.5)
-							}
-							if let lastHost = lastHostShown, !isConnecting {
-								VStack(spacing: 0) {
-									HStack {
-										VStack(alignment: .leading, spacing: 4) {
-											Text("Last connected")
-												.font(.system(size: 12))
-												.opacity(0.5)
-											Text(lastHost)
-												.font(.system(size: 16, weight: .medium))
-										}
-										Spacer()
-										Button(action: reconnectLastHost) {
-											Text("Reconnect")
-												.lineLimit(1)
-												.fixedSize()
-												.foregroundColor(.white)
-												.padding(.horizontal, 16)
-												.frame(minHeight: 44)
-												.background(Color("AccentColor"))
-												.cornerRadius(8)
-										}
-										Button(action: clearLastHost) {
-											Image(systemName: "xmark")
-												.foregroundColor(Color("Foreground"))
-												.opacity(0.5)
-												.frame(width: 44, height: 44)
-												.contentShape(Rectangle())
-										}
-									}
-									.padding()
-									HStack {
-										Toggle("Reconnect on app launch", isOn: Binding(
-											get: { SettingsHandler.autoConnectOnLaunch },
-											set: { SettingsHandler.autoConnectOnLaunch = $0 }
-										))
-										.font(.system(size: 13))
-										.opacity(0.7)
-									}
-									.padding(.horizontal)
-									.padding(.bottom, 10)
-								}
-								.frame(maxWidth: 400)
-								.background(Rectangle().fill(Color("BackgroundCard")))
-								.cornerRadius(8)
-							}
-							ForEach(hosts) { i in
-								ZStack {
-									VStack {
-										URLImage(url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=64,h=64,fit=crop,background=white,q=90,f=jpeg/avatars/\(String(i.user.id))/avatar"),
-												output:
-												{
-													$0
-														.resizable()
-														.aspectRatio(contentMode: .fit)
-														.frame(width: 64, height: 64)
-														.cornerRadius(8)
-												},
-												placeholder:
-												{
-													Image("IconTransparent")
-														.resizable()
-														.aspectRatio(contentMode: .fit)
-														.frame(width: 64, height: 64)
-														.background(Rectangle().fill(Color("BackgroundPrompt")))
-														.cornerRadius(8)
-												})
-										Text(i.hostname)
-											.font(.system(size: 20, weight: .medium))
-											.multilineTextAlignment(.center)
-										Text("\(i.user.name)#\(String(i.user.id))")
-											.font(.system(size: 16, weight: .medium))
-											.multilineTextAlignment(.center)
-											.opacity(0.5)
-										Button(action: { connectTo(i) }) {
-											Text("Connect")
-												.lineLimit(1)
-												.fixedSize()
-												.foregroundColor(.white)
-												.padding(.horizontal, 28)
-												.frame(minHeight: 44)
-												.background(Color("AccentColor"))
-												.cornerRadius(8)
-										}
-									}
-
-									if i.connections > 0 {
-										VStack {
-											HStack {
-												Image(systemName: "person.fill")
-												Text(String(i.connections))
-													.font(.system(size: 16, weight: .medium))
-												Spacer()
-											}
-											Spacer()
-										}
-									}
-								}
-								.padding()
-								.frame(maxWidth: 400)
-								.background(Rectangle().fill(Color("BackgroundCard")))
-								.cornerRadius(8)
-								.contextMenu {
-									Button(action: { UIPasteboard.general.string = i.hostname }) {
-										Label("Copy Name", systemImage: "doc.on.doc")
-									}
-								}
-							}
-						}
-						.padding()
-					}
-					.zIndex(page == .hosts ? 0 : -1)
-					.disabled(page != .hosts)
-					.opacity(page == .hosts ? 1 : 0)
+					ScrollView(.vertical) { hostsContent }
+						.zIndex(page == .hosts ? 0 : -1)
+						.disabled(page != .hosts)
+						.opacity(page == .hosts ? 1 : 0)
 
 					// Friends page
-					ScrollView(.vertical) {
-						VStack {
-							if let user = userInfo {
-								Text("You")
-									.multilineTextAlignment(.center)
-									.opacity(0.5)
-								HStack {
-									URLImage(url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=48,h=48,fit=crop,background=white,q=90,f=jpeg/avatars/\(String(user.id))/avatar"),
-										output:
-										{
-											$0
-												.resizable()
-												.aspectRatio(contentMode: .fit)
-												.frame(width: 48, height: 48)
-												.cornerRadius(6)
-										},
-										placeholder:
-										{
-											Image("IconTransparent")
-												.resizable()
-												.aspectRatio(contentMode: .fit)
-												.frame(width: 48, height: 48)
-												.background(Rectangle().fill(Color("BackgroundPrompt")))
-												.cornerRadius(6)
-										})
-									Text("\(user.username)#\(String(user.id))")
-										.font(.system(size: 16, weight: .medium))
-										.multilineTextAlignment(.center)
-									Spacer()
-								}
-								.padding(8)
-								.background(Color("BackgroundCard"))
-								.cornerRadius(12)
-							}
-							if friends.count > 0 {
-								Text("Friends")
-									.multilineTextAlignment(.center)
-									.opacity(0.5)
-								ForEach(friends) { i in
-									HStack {
-										URLImage(url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=48,h=48,fit=crop,background=white,q=90,f=jpeg/avatars/\(String(i.id))/avatar"),
-											output:
-											{
-												$0
-													.resizable()
-													.aspectRatio(contentMode: .fit)
-													.frame(width: 48, height: 48)
-													.cornerRadius(6)
-											},
-											placeholder:
-											{
-												Image("IconTransparent")
-													.resizable()
-													.aspectRatio(contentMode: .fit)
-													.frame(width: 48, height: 48)
-													.background(Rectangle().fill(Color("BackgroundPrompt")))
-													.cornerRadius(6)
-											})
-										Text("\(i.username)#\(String(i.id))")
-											.font(.system(size: 16, weight: .medium))
-											.multilineTextAlignment(.center)
-										Spacer()
-//										Button(action:{ }, label:{ Image(systemName:"ellipsis.circle.fill") })
-//											.font(.system(size:20))
-//											.foregroundColor(Color("AccentColor"))
-//											.padding(8)
-									}
-									.padding(8)
-									.background(Color("BackgroundCard"))
-									.cornerRadius(12)
-								}
-							}
-						}
-						.padding()
-					}
-					.zIndex(page == .friends ? 0 : -1)
-					.disabled(page != .friends)
-					.opacity(page == .friends ? 1 : 0)
+					ScrollView(.vertical) { friendsContent }
+						.zIndex(page == .friends ? 0 : -1)
+						.disabled(page != .friends)
+						.opacity(page == .friends ? 1 : 0)
 				}
 				.padding(.top, -8)
 				.frame(maxWidth: .infinity)
@@ -411,32 +230,227 @@ struct MainView: View {
 
 			// Loading elements
 			if isConnecting {
-				VStack(spacing: 12) {
-					ActivityIndicator(isAnimating: $isConnecting, style: .large, tint: .white)
-					Text(waitingForApproval ? "Waiting for \(connectingToName) to approve you..." : retryingConnect ? "\(connectingToName) didn't answer, trying again..." : "Requesting connection to \(connectingToName)...")
-						.font(.system(size: 16, weight: .medium))
-						.foregroundColor(.white)
-						.multilineTextAlignment(.center)
-						.padding(.horizontal)
-					Button(action: cancelConnection) {
-						Text("Cancel")
-							.font(.system(size: 15, weight: .semibold))
-							.foregroundColor(.white)
-							.padding(.horizontal, 20)
-							.frame(minHeight: 44)
-							.background(Color.white.opacity(0.2))
-							.cornerRadius(8)
-					}
-					.padding(.top, 4)
-					if SettingsHandler.showConnectionLog {
-						ConnectionLogPanel()
-					}
-				}
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
-				.background(Color.black.opacity(0.85).edgesIgnoringSafeArea(.all))
+				connectingOverlay
 			}
 		}
 		.foregroundColor(Color("Foreground"))
+	}
+
+	// MARK: Shared content
+
+	/// Even column counts so cards divide cleanly around the iPhone Duo fold;
+	/// driven by size class only, never by display dimensions.
+	var hostColumns: [GridItem] {
+		Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .top), count: horizontalSizeClass == .regular ? 2 : 1)
+	}
+
+	var cardMaxWidth: CGFloat {
+		horizontalSizeClass == .regular ? .infinity : 400
+	}
+
+	var hostsContent: some View {
+		VStack {
+			if sessionExpired {
+				banner("Your Parsec session expired", action: "Sign In", perform: logout)
+			}
+			if let refreshError = refreshError {
+				banner(refreshError, action: "Retry", perform: refreshHosts)
+			}
+			if isRefreshing {
+				HStack(spacing: 8) {
+					if #available(iOS 26, *) {
+						ProgressView()
+					} else {
+						ActivityIndicator(isAnimating: $isRefreshing, style: .medium, tint: UIColor(named: "Foreground") ?? .white)
+							.frame(width: 20, height: 20)
+					}
+					Text("Refreshing hosts...")
+						.foregroundColor(Color("Foreground"))
+				}
+			} else if !refreshTime.isEmpty {
+				Text(refreshTime)
+					.multilineTextAlignment(.center)
+					.opacity(0.5)
+			}
+			if let lastHost = lastHostShown, !isConnecting {
+				lastHostCard(lastHost)
+			}
+			LazyVGrid(columns: hostColumns, spacing: 12) {
+				ForEach(hosts) { hostCard($0) }
+			}
+		}
+		.padding()
+	}
+
+	func banner(_ text: String, action: String, perform: @escaping () -> Void) -> some View {
+		HStack {
+			Text(text)
+				.foregroundColor(Color("Foreground"))
+			Spacer()
+			Button(action: perform) {
+				Text(action)
+					.fontWeight(.semibold)
+					.foregroundColor(Color("AccentColor"))
+					.frame(minWidth: 44, minHeight: 44)
+					.contentShape(Rectangle())
+			}
+		}
+		.padding(.horizontal, 12)
+		.padding(.vertical, 2)
+		.background(Rectangle().fill(Color("BackgroundPrompt")))
+		.cornerRadius(8)
+		.frame(maxWidth: 400)
+		.padding(.horizontal)
+	}
+
+	func lastHostCard(_ lastHost: String) -> some View {
+		VStack(spacing: 0) {
+			HStack {
+				VStack(alignment: .leading, spacing: 4) {
+					Text("Last connected")
+						.font(.system(size: 12))
+						.opacity(0.5)
+					Text(lastHost)
+						.font(.system(size: 16, weight: .medium))
+				}
+				Spacer()
+				ActionButton("Reconnect", action: reconnectLastHost)
+				Button(action: clearLastHost) {
+					Image(systemName: "xmark")
+						.foregroundColor(Color("Foreground"))
+						.opacity(0.5)
+						.frame(width: 44, height: 44)
+						.contentShape(Rectangle())
+				}
+				.accessibilityLabel("Forget last host")
+			}
+			.padding()
+			HStack {
+				Toggle("Reconnect on app launch", isOn: Binding(
+					get: { SettingsHandler.autoConnectOnLaunch },
+					set: { SettingsHandler.autoConnectOnLaunch = $0 }
+				))
+				.font(.system(size: 13))
+				.opacity(0.7)
+			}
+			.padding(.horizontal)
+			.padding(.bottom, 10)
+		}
+		.frame(maxWidth: 400)
+		.card()
+	}
+
+	func hostCard(_ i: IdentifiableHostInfo) -> some View {
+		ZStack {
+			VStack {
+				avatar(i.user.id, size: 64, radius: 8)
+				Text(i.hostname)
+					.font(.system(size: 20, weight: .medium))
+					.multilineTextAlignment(.center)
+				Text("\(i.user.name)#\(String(i.user.id))")
+					.font(.system(size: 16, weight: .medium))
+					.multilineTextAlignment(.center)
+					.opacity(0.5)
+				ActionButton("Connect") { connectTo(i) }
+			}
+			.frame(maxWidth: .infinity)
+
+			if i.connections > 0 {
+				VStack {
+					HStack {
+						Image(systemName: "person.fill")
+						Text(String(i.connections))
+							.font(.system(size: 16, weight: .medium))
+						Spacer()
+					}
+					Spacer()
+				}
+				.accessibilityElement(children: .combine)
+				.accessibilityLabel("\(i.connections) connected")
+			}
+		}
+		.padding()
+		.card()
+		.frame(maxWidth: cardMaxWidth)
+		.contextMenu {
+			Button(action: { UIPasteboard.general.string = i.hostname }) {
+				Label("Copy Name", systemImage: "doc.on.doc")
+			}
+		}
+	}
+
+	func avatar(_ id: Int, size: Int, radius: CGFloat) -> some View {
+		URLImage(url: URL(string: "https://parsecusercontent.com/cors-resize-image/w=\(size),h=\(size),fit=crop,background=white,q=90,f=jpeg/avatars/\(String(id))/avatar"),
+			output: {
+				$0
+					.resizable()
+					.aspectRatio(contentMode: .fit)
+					.frame(width: CGFloat(size), height: CGFloat(size))
+					.cornerRadius(radius)
+			},
+			placeholder: {
+				Image("IconTransparent")
+					.resizable()
+					.aspectRatio(contentMode: .fit)
+					.frame(width: CGFloat(size), height: CGFloat(size))
+					.background(Rectangle().fill(Color("BackgroundPrompt")))
+					.cornerRadius(radius)
+			})
+	}
+
+	func userRow(_ id: Int, _ username: String) -> some View {
+		HStack {
+			avatar(id, size: 48, radius: 6)
+			Text("\(username)#\(String(id))")
+				.font(.system(size: 16, weight: .medium))
+				.multilineTextAlignment(.center)
+			Spacer()
+		}
+		.padding(8)
+		.card(cornerRadius: 12)
+	}
+
+	var friendsContent: some View {
+		VStack {
+			if let user = userInfo {
+				Text("You")
+					.multilineTextAlignment(.center)
+					.opacity(0.5)
+				userRow(user.id, user.username)
+			}
+			if friends.count > 0 {
+				Text("Friends")
+					.multilineTextAlignment(.center)
+					.opacity(0.5)
+				LazyVGrid(columns: hostColumns, spacing: 8) {
+					ForEach(friends) { userRow($0.id, $0.username) }
+				}
+			}
+		}
+		.padding()
+	}
+
+	var connectingOverlay: some View {
+		VStack(spacing: 12) {
+			if #available(iOS 26, *) {
+				ProgressView().controlSize(.large).tint(.white)
+			} else {
+				ActivityIndicator(isAnimating: $isConnecting, style: .large, tint: .white)
+			}
+			Text(waitingForApproval ? "Waiting for \(connectingToName) to approve you..." : retryingConnect ? "\(connectingToName) didn't answer, trying again..." : "Requesting connection to \(connectingToName)...")
+				.font(.system(size: 16, weight: .medium))
+				.foregroundColor(.white)
+				.multilineTextAlignment(.center)
+				.padding(.horizontal)
+			ActionButton("Cancel", prominent: false, action: cancelConnection)
+				.padding(.top, 4)
+			if SettingsHandler.showConnectionLog {
+				ConnectionLogPanel()
+			}
+		}
+		.frame(maxWidth: .infinity, maxHeight: .infinity)
+		.background(Color.black.opacity(0.85).edgesIgnoringSafeArea(.all))
+		.environment(\.colorScheme, .dark)
 	}
 
 	func initView() {
@@ -813,6 +827,53 @@ struct IdentifiableHostInfo: Identifiable {
 struct IdentifiableUserInfo: Identifiable {
 	var id: Int // User ID
 	var username: String // User Display Name
+}
+
+/// Toolbar for the native main view. Every item carries a title and a symbol so the system can
+/// show it in a vertical bar, an expanded form, or the overflow menu (iPhone Duo).
+@available(iOS 26, *)
+private struct MainToolbar: ViewModifier {
+	var showsRefresh: Bool
+	var isRefreshing: Bool
+	var refresh: () -> Void
+	var openSettings: () -> Void
+	var logout: () -> Void
+
+	func body(content: Content) -> some View {
+		#if compiler(>=6.4) // iOS 27 SDK: protect actions from overflow, route Log Out into the system overflow menu
+		if #available(iOS 27, *) {
+			content.toolbar {
+				ToolbarItemGroup(placement: .primaryAction) { actions }
+					.visibilityPriority(.high)
+				ToolbarOverflowMenu { logoutButton }
+			}
+		} else {
+			legacy(content)
+		}
+		#else
+		legacy(content)
+		#endif
+	}
+
+	func legacy(_ content: Content) -> some View {
+		content.toolbar {
+			ToolbarItem(placement: .topBarLeading) { logoutButton }
+			ToolbarItemGroup(placement: .primaryAction) { actions }
+		}
+	}
+
+	@ViewBuilder
+	var actions: some View {
+		if showsRefresh {
+			Button(action: refresh) { Label("Refresh", systemImage: "arrow.clockwise") }
+				.disabled(isRefreshing)
+		}
+		Button(action: openSettings) { Label("Settings", systemImage: "gear") }
+	}
+
+	var logoutButton: some View {
+		Button(role: .destructive, action: logout) { Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right") }
+	}
 }
 
 private enum Page {

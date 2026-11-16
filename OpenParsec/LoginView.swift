@@ -38,29 +38,19 @@ struct LoginView: View {
 				.frame(height: 80)
 				TextField("Email", text: $inputEmail)
 					.padding()
-					.background(Rectangle().fill(Color("BackgroundField")))
-					.cornerRadius(8)
+					.fieldBackground()
 					.disableAutocorrection(true)
-					.autocapitalization(/*@START_MENU_TOKEN@*/.none/*@END_MENU_TOKEN@*/)
+					.autocapitalization(.none)
 					.keyboardType(.emailAddress)
 					.textContentType(.emailAddress)
 				SecureField("Password", text: $inputPassword, onCommit: { authenticate() })
 					.padding()
-					.background(Rectangle().fill(Color("BackgroundField")))
-					.cornerRadius(8)
+					.fieldBackground()
 					.disableAutocorrection(true)
-					.autocapitalization(/*@START_MENU_TOKEN@*/.none/*@END_MENU_TOKEN@*/)
+					.autocapitalization(.none)
 					.textContentType(.password)
-				Button(action: {authenticate()}) {
-					ZStack {
-						Rectangle()
-							.fill(Color("AccentColor"))
-							.cornerRadius(8)
-						Text("Login")
-							.foregroundColor(.white)
-					}
-					.frame(height: 54)
-				}
+				ActionButton("Login", fullWidth: true) { authenticate() }
+					.padding(.top, 4)
 			}
 
 			.padding()
@@ -76,48 +66,33 @@ struct LoginView: View {
 						.edgesIgnoringSafeArea(.all)
 					VStack {
 						if isLoading {
-							ActivityIndicator(isAnimating: $isLoading, style: .large, tint: .white)
-							 .padding()
-						 Text("Loading...")
-							 .multilineTextAlignment(.center)
+							if #available(iOS 26, *) {
+								ProgressView().controlSize(.large).padding()
+							} else {
+								ActivityIndicator(isAnimating: $isLoading, style: .large, tint: .white)
+									.padding()
+							}
+							Text("Loading...")
+								.multilineTextAlignment(.center)
 						} else if presentTFAAlert {
 							Text("Please enter your 2FA code from your authenticator app")
 								.multilineTextAlignment(.center)
 							SecureField("2FA Code", text: $inputTFA)
 								.padding()
-								.background(Rectangle().fill(Color("BackgroundField")))
+								.fieldBackground()
 								.foregroundColor(Color("Foreground"))
-								.cornerRadius(8)
 								.disableAutocorrection(true)
-								.autocapitalization(/*@START_MENU_TOKEN@*/.none/*@END_MENU_TOKEN@*/)
+								.autocapitalization(.none)
 								.textContentType(.oneTimeCode)
 							HStack {
-								Button(action: {presentTFAAlert = false}) {
-									ZStack {
-										Rectangle()
-											.fill(Color("BackgroundButton"))
-											.cornerRadius(8)
-										Text("Cancel")
-											.foregroundColor(Color("Foreground"))
-									}
-									.frame(height: 54)
-								}
-								Button(action: {authenticate(inputTFA)}) {
-									ZStack {
-										Rectangle()
-											.fill(Color("AccentColor"))
-											.cornerRadius(8)
-										Text("Enter")
-											.foregroundColor(.white)
-									}
-									.frame(height: 54)
-								}
+								ActionButton("Cancel", prominent: false, fullWidth: true) { presentTFAAlert = false }
+								ActionButton("Enter", fullWidth: true) { authenticate(inputTFA) }
 							}
 						}
 					}
 					.padding()
-					.background(Rectangle().fill(Color("BackgroundPrompt")))
-					.cornerRadius(8)
+					.glassPanel(cornerRadius: 28, fallback: Color("BackgroundPrompt"))
+					.frame(maxWidth: 440)
 					.padding()
 				}
 			}
@@ -230,6 +205,18 @@ struct LoginView: View {
 			}
 		}
 		task.resume()
+	}
+}
+
+private extension View {
+	func fieldBackground() -> some View {
+		Group {
+			if #available(iOS 26, *) {
+				self.background(Color("BackgroundField"), in: .rect(cornerRadius: 14, style: .continuous))
+			} else {
+				self.background(Rectangle().fill(Color("BackgroundField"))).cornerRadius(8)
+			}
+		}
 	}
 }
 

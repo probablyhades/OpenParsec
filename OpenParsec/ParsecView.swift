@@ -235,7 +235,7 @@ struct ParsecStatusBar: View {
 				ParsecView.getHostUserData()
 				// SDK forgets stream dims on reconnect, re-send them so the frame fills not corners
 				if let vc = parsecViewController {
-					CParsec.setFrame(vc.view.bounds.width, vc.view.bounds.height, UIScreen.main.scale)
+					CParsec.setFrame(vc.view.bounds.width, vc.view.bounds.height, vc.screenScale)
 				}
 			}
 			if CParsec.runningRenderer != .metal || CACurrentMediaTime() - liveSince! > 6 {
@@ -303,6 +303,8 @@ struct ParsecView: View {
 	@State var bitrateAtOpen: Int = 0
 	@State var waitingForNetwork: Bool = false
 	@State var waitingForStream: Bool = false
+	/// iPhone Duo camera occlusions and fold; the stream itself stays full-bleed, only our overlays avoid them.
+	@State var duoSpace: DuoReservedSpace = .none
 
 	@State var resolutions: [ParsecResolution]
 	@State var bitrates: [Int]
@@ -344,6 +346,7 @@ struct ParsecView: View {
 				.prefersPersistentSystemOverlaysHidden()
 
 			ParsecStatusBar(showMenu: $showMenu, showDCAlert: $showDCAlert, DCAlertText: $DCAlertText, parsecViewController: parsecViewController, isReconnecting: $isReconnecting, connectionLost: $connectionLost, waitingForNetwork: $waitingForNetwork, waitingForStream: $waitingForStream, onSilentDisconnect: { disconnect() })
+				.padding(.top, duoSpace.occlusion.top)
 
 			if isReconnecting || connectionLost || waitingForNetwork {
 				VStack(spacing: 12) {
@@ -351,6 +354,8 @@ struct ParsecView: View {
 						Image(systemName: "wifi.slash")
 							.font(.system(size: 34, weight: .medium))
 							.foregroundColor(.white)
+					} else if #available(iOS 26, *) {
+						ProgressView().controlSize(.large).tint(.white)
 					} else {
 						ActivityIndicator(isAnimating: .constant(true), style: .large, tint: .white)
 					}
@@ -365,16 +370,9 @@ struct ParsecView: View {
 							.foregroundColor(.white)
 							.opacity(0.7)
 					}
-					Button(action: { disconnect() }) {
-						Text("Close")
-							.font(.system(size: 15, weight: .semibold))
-							.foregroundColor(.white)
-							.padding(.horizontal, 20)
-							.frame(minHeight: 44)
-							.background(Color.white.opacity(0.2))
-							.cornerRadius(8)
-					}
-					.padding(.top, 4)
+					ActionButton("Close", prominent: false) { disconnect() }
+						.environment(\.colorScheme, .dark)
+						.padding(.top, 4)
 					if settingsStore.showConnectionLog {
 						ConnectionLogPanel()
 					}
@@ -390,8 +388,7 @@ struct ParsecView: View {
 					.foregroundColor(.white)
 					.padding(.horizontal, 16)
 					.padding(.vertical, 10)
-					.background(Color("BackgroundPrompt").opacity(0.85))
-					.cornerRadius(8)
+					.glassPanel(cornerRadius: 20, fallback: Color("BackgroundPrompt").opacity(0.85))
 					.zIndex(3)
 			}
 
@@ -401,8 +398,7 @@ struct ParsecView: View {
 					.foregroundColor(.white)
 					.padding(.horizontal, 16)
 					.padding(.vertical, 10)
-					.background(Color("BackgroundPrompt").opacity(0.85))
-					.cornerRadius(8)
+					.glassPanel(cornerRadius: 20, fallback: Color("BackgroundPrompt").opacity(0.85))
 					.padding(.top, showKeyboard ? 100 : 0)
 					.frame(maxHeight: .infinity, alignment: showKeyboard ? .top : .center)
 					.allowsHitTesting(false)
@@ -421,14 +417,24 @@ struct ParsecView: View {
 									ParsecView.getHostUserData()
 								}
 							}) {
-								Image("IconTransparent")
-									.resizable()
-									.aspectRatio(contentMode: .fit)
-									.frame(width: 48, height: 48)
-									.background(Rectangle().fill(Color("BackgroundPrompt").opacity(showMenu ? 0.75 : 1)))
-									.cornerRadius(8)
-									.opacity(showMenu ? 1 : 0.25)
+								if #available(iOS 26, *) {
+									Image("IconTransparent")
+										.resizable()
+										.aspectRatio(contentMode: .fit)
+										.frame(width: 48, height: 48)
+										.opacity(showMenu ? 1 : 0.5)
+										.glassControl(active: showMenu)
+								} else {
+									Image("IconTransparent")
+										.resizable()
+										.aspectRatio(contentMode: .fit)
+										.frame(width: 48, height: 48)
+										.background(Rectangle().fill(Color("BackgroundPrompt").opacity(showMenu ? 0.75 : 1)))
+										.cornerRadius(8)
+										.opacity(showMenu ? 1 : 0.25)
+								}
 							}
+							.accessibilityLabel(showMenu ? "Close Menu" : "Menu")
 							.padding()
 							.edgesIgnoringSafeArea(.all)
 							Spacer()
@@ -443,9 +449,9 @@ struct ParsecView: View {
 									.frame(width: 32, height: 32)
 									.foregroundColor(Color("Foreground"))
 									.padding(8)
-									.background(Rectangle().fill(Color("BackgroundPrompt").opacity(showKeyboard ? 0.75 : 0.5)))
-									.cornerRadius(8)
+									.glassControl(active: showKeyboard)
 							}
+							.accessibilityLabel(showKeyboard ? "Hide Keyboard" : "Show Keyboard")
 							.padding(.leading)
 							.edgesIgnoringSafeArea(.all)
 							Spacer()
@@ -467,6 +473,9 @@ struct ParsecView: View {
 					Spacer()
 				}
 			}
+			.padding(duoSpace.occlusion)
+			.frame(maxHeight: duoSpace.heightAboveFold(from: 0), alignment: .top)
+			.frame(maxHeight: .infinity, alignment: .top)
 			.zIndex(2)
 		}
 		.statusBarHidden(SettingsHandler.hideStatusBar)
@@ -508,7 +517,8 @@ struct ParsecView: View {
 			disconnect(isBackgroundDisconnect: true)
 		}
 		.edgesIgnoringSafeArea(.all)
-		.overlay(SettingsView(visible: $showSettings))
+		.readDuoReservedSpace($duoSpace)
+		.settingsPresentation(isPresented: $showSettings)
 
 	}
 
@@ -517,16 +527,10 @@ struct ParsecView: View {
 			ScrollView {
 				VStack(spacing: 3) {
 					Button(action: disableOverlay) {
-						Text("Hide Buttons")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Hide Buttons", "eye.slash")
 					}
 					Button(action: toggleMute) {
-						Text("Sound: \(muted ? "OFF" : "ON")")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Sound: \(muted ? "OFF" : "ON")", muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
 					}
 					Menu {
 						ForEach(resolutions, id: \.self) { resolution in
@@ -541,10 +545,7 @@ struct ParsecView: View {
 							}
 						}
 					} label: {
-						Text("Resolution")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Resolution", "rectangle.expand.diagonal")
 					}
 					Menu {
 						Button(action: {
@@ -568,10 +569,7 @@ struct ParsecView: View {
 							}
 						}
 					} label: {
-						Text("Bitrate")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Bitrate", "speedometer")
 					}
 					if DataManager.model.displayConfigs.count > 1 {
 						Menu {
@@ -584,36 +582,21 @@ struct ParsecView: View {
 								}
 							}
 						} label: {
-							Text("Switch Display")
-								.padding(8)
-								.frame(maxWidth: .infinity)
-								.multilineTextAlignment(.center)
+							menuRow("Switch Display", "display.2")
 						}
 					}
 
 					Button(action: toggleConstantFps) {
-						Text("Constant Frame Rate: \(dataModel.constantFps ? "ON" : "OFF")")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Constant Frame Rate: \(dataModel.constantFps ? "ON" : "OFF")", "film")
 					}
 					Button(action: toggleZoom) {
-						Text("Pinch to Zoom: \(zoomEnabled ? "ON" : "OFF")")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Pinch to Zoom: \(zoomEnabled ? "ON" : "OFF")", "plus.magnifyingglass")
 					}
 					Button(action: toggleTouchMode) {
-						Text("Touch Mode: \(settingsStore.cursorMode == .direct ? "Direct" : "Touchpad")")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Touch Mode: \(settingsStore.cursorMode == .direct ? "Direct" : "Touchpad")", settingsStore.cursorMode == .direct ? "hand.point.up.left" : "rectangle.and.hand.point.up.left")
 					}
 					Button(action: openSettings) {
-						Text("Settings")
-							.padding(8)
-							.frame(maxWidth: .infinity)
-							.multilineTextAlignment(.center)
+						menuRow("Settings", "gear")
 					}
 				}
 				.background(GeometryReader { proxy in
@@ -627,19 +610,32 @@ struct ParsecView: View {
 				.opacity(0.25)
 				.frame(height: 1)
 			Button(action: { disconnect()}) {
-				Text("Disconnect")
+				menuRow("Disconnect", "xmark.circle")
 					.foregroundColor(.red)
-					.padding(8)
-					.frame(maxWidth: .infinity)
-					.multilineTextAlignment(.center)
 			}
 		}
-		.background(Rectangle().fill(Color("BackgroundPrompt").opacity(0.75)))
 		.foregroundColor(Color("Foreground"))
+		.glassPanel(cornerRadius: 20)
 		.frame(maxWidth: menuWidth)
-		.cornerRadius(8)
 		.padding(.horizontal)
 		// .edgesIgnoringSafeArea(.all)
+	}
+
+	/// Menu rows carry a symbol plus their title, so they read at a glance over the stream.
+	@ViewBuilder
+	func menuRow(_ title: String, _ systemImage: String) -> some View {
+		if #available(iOS 26, *) {
+			Label(title, systemImage: systemImage)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 14)
+				.padding(.vertical, 10)
+				.contentShape(Rectangle())
+		} else {
+			Text(title)
+				.padding(8)
+				.frame(maxWidth: .infinity)
+				.multilineTextAlignment(.center)
+		}
 	}
 
 	var overlayTitle: String {
@@ -720,7 +716,7 @@ struct ParsecView: View {
 		DataManager.model.constantFps = SettingsHandler.constantFps
 
 		let screenSize: CGSize = self.parsecViewController.view.frame.size
-		let scaleFactor = UIScreen.main.nativeScale
+		let scaleFactor = parsecViewController.screenNativeScale
 		ParsecResolution.updateClientResolution(width: Int(screenSize.width * scaleFactor), height: Int(screenSize.height * scaleFactor))
 
 		ParsecView.getHostUserData()

@@ -202,10 +202,122 @@ struct SettingsView: View {
 	}
 
 	func getVersionInfo() -> String {
+		SettingsView.versionInfo()
+	}
+
+	static func versionInfo() -> String {
 		let info = Bundle.main.infoDictionary
 		let version = info?["CFBundleShortVersionString"] as? String ?? "Unknown version"
 		let commit = info?["GitCommitInfo"] as? String ?? "Unknown commit"
 		return "Version \(version)-\(commit)"
+	}
+}
+
+/// Native settings: a grouped Form in a sheet, used on iOS 26+ (system Liquid Glass toolbar and controls).
+@available(iOS 26, *)
+struct NativeSettingsView: View {
+	@Environment(\.dismiss) private var dismiss
+	@ObservedObject private var settings = SettingsStore.shared
+
+	var body: some View {
+		NavigationStack {
+			Form {
+				Section("Touch & Mouse") {
+					Picker("Touch Mode", selection: $settings.cursorMode) {
+						Text("Touchpad").tag(CursorMode.touchpad)
+						Text("Direct").tag(CursorMode.direct)
+					}
+					Picker("Right Click", selection: $settings.rightClickPosition) {
+						Text("First Finger").tag(RightClickPosition.firstFinger)
+						Text("Middle").tag(RightClickPosition.middle)
+						Text("Second Finger").tag(RightClickPosition.secondFinger)
+					}
+					slider("Pointer Speed", value: $settings.mouseSensitivity, in: 0.1...4, step: 0.1)
+					slider("Cursor Size", value: $settings.cursorScale, in: 0.1...4, step: 0.1)
+					slider("Scroll Speed", value: $settings.scrollSensitivity, in: 0.5...5, step: 0.5)
+					Toggle("Reverse Scrolling", isOn: $settings.reverseScrollDirection)
+					Toggle("Pinch to Zoom", isOn: $settings.zoomEnabled)
+				}
+				Section("Keyboard") {
+					Toggle("Show Keyboard Button", isOn: $settings.showKeyboardButton)
+					Toggle("Option Key as Command", isOn: $settings.optionAsCommand)
+				}
+				Section("Video") {
+					Picker("Renderer", selection: $settings.renderer) {
+						Text("OpenGL").tag(RendererType.opengl)
+						Text("Metal").tag(RendererType.metal)
+					}
+					.pickerStyle(.segmented)
+					Picker("Resolution", selection: $settings.resolution) {
+						ForEach(ParsecResolution.resolutions, id: \.self) { Text($0.desc).tag($0) }
+					}
+					Picker("Bitrate", selection: $settings.bitrate) {
+						Text("Host Default").tag(0)
+						ForEach(ParsecResolution.bitrates, id: \.self) { Text("\($0) Mbps").tag($0) }
+					}
+					Picker("Frame Rate", selection: $settings.preferredFramesPerSecond) {
+						Text("Auto (Device Max)").tag(0)
+						Text("120 FPS").tag(120)
+						Text("60 FPS").tag(60)
+						Text("30 FPS").tag(30)
+					}
+					Toggle("Constant Frame Rate", isOn: $settings.constantFps)
+					Picker("Codec", selection: $settings.decoder) {
+						Text("H.264").tag(DecoderPref.h264)
+						Text("Prefer H.265").tag(DecoderPref.h265)
+					}
+				}
+				Section("During a Stream") {
+					Toggle("Show Stream Stats", isOn: $settings.alwaysShowStatus)
+					Toggle("Show Menu Button", isOn: Binding(get: { !settings.noOverlay }, set: { settings.noOverlay = !$0 }))
+					Picker("Menu Edge Swipe", selection: $settings.menuSwipeEdge) {
+						Text("Off").tag(MenuSwipeEdge.off)
+						Text("Left Edge").tag(MenuSwipeEdge.left)
+						Text("Right Edge").tag(MenuSwipeEdge.right)
+					}
+					Toggle("Hide Status Bar", isOn: $settings.hideStatusBar)
+					Toggle("Picture in Picture", isOn: $settings.enablePiP)
+					Toggle("Start Muted", isOn: $settings.startMuted)
+				}
+				Section {
+					Toggle("Auto Reconnect", isOn: $settings.autoReconnect)
+					if settings.autoReconnect {
+						Toggle("Show Reconnect Errors", isOn: $settings.errorPrompts)
+					}
+					Toggle("Show Connection Log", isOn: $settings.showConnectionLog)
+				} header: {
+					Text("Developer")
+				} footer: {
+					Text(SettingsView.versionInfo())
+				}
+			}
+			.navigationTitle("Settings")
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbar {
+				ToolbarItem(placement: .cancellationAction) {
+					Button(role: .close) { dismiss() } label: { Label("Close", systemImage: "xmark") }
+				}
+			}
+		}
+	}
+
+	private func slider(_ title: String, value: Binding<Double>, in range: ClosedRange<Double>, step: Double) -> some View {
+		VStack(alignment: .leading, spacing: 4) {
+			LabeledContent(title, value: String(format: "%.1f", value.wrappedValue))
+			Slider(value: value, in: range, step: step)
+		}
+	}
+}
+
+extension View {
+	/// Presents settings as a native sheet on iOS 26+, or the original in-place overlay before that.
+	@ViewBuilder
+	func settingsPresentation(isPresented: Binding<Bool>) -> some View {
+		if #available(iOS 26, *) {
+			self.sheet(isPresented: isPresented) { NativeSettingsView().preferredColorScheme(appScheme) }
+		} else {
+			self.overlay(SettingsView(visible: isPresented))
+		}
 	}
 }
 

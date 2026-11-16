@@ -91,6 +91,14 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate, ParsecTouchI
 	var contentView: UIView!
 	var lastLaidOutWidth: CGFloat = 0
 	var lastLaidOutHeight: CGFloat = 0
+	/// Orientation-independent size of the display we're on. Changes when iPhone Duo moves the app
+	/// between its outer and inner displays (or an iPad moves it to an external display), not on rotation.
+	private var lastScreenSize: CGSize?
+	private var followScreenWork: DispatchWorkItem?
+
+	/// Scale of the display this view is actually on; iPhone Duo's two displays need not match UIScreen.main.
+	var screenScale: CGFloat { view.window?.screen.scale ?? traitCollection.displayScale }
+	var screenNativeScale: CGFloat { view.window?.screen.nativeScale ?? UIScreen.main.nativeScale }
 
 	override var prefersPointerLocked: Bool {
 		return true
@@ -127,7 +135,7 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate, ParsecTouchI
 	}
 
 	func computeRenderScale() -> CGFloat {
-		let nativeScale = UIScreen.main.nativeScale
+		let nativeScale = screenNativeScale
 		guard scrollView.zoomScale > 1.01 else { return nativeScale }
 		let vw = glkView.renderView.frame.size.width
 		let vh = glkView.renderView.frame.size.height
@@ -355,7 +363,7 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate, ParsecTouchI
 		self.glkView.updateSize(width: w, height: h)
 		contentView.frame.size = CGSize(width: w, height: h)
 		scrollView.contentSize = CGSize(width: w, height: h)
-		CParsec.setFrame(w, h, UIScreen.main.scale)
+		CParsec.setFrame(w, h, screenScale)
 
         // Reset accessory view to ensure correct width in new orientation
         clearToolbarModifiers(sendToHost: true)
@@ -379,7 +387,32 @@ class ParsecViewController: UIViewController, UIScrollViewDelegate, ParsecTouchI
 		glkView.updateSize(width: w, height: h)
 		contentView.frame.size = CGSize(width: w, height: h)
 		scrollView.contentSize = CGSize(width: w, height: h)
-		CParsec.setFrame(w, h, UIScreen.main.scale)
+		CParsec.setFrame(w, h, screenScale)
+		followScreenChange(w, h)
+	}
+
+	/// When the app lands on a different physical display (iPhone Duo folding/unfolding), ask the host for
+	/// a stream matching the new display instead of letter/pillarboxing the old aspect ratio.
+	/// Only for "Client Resolution", and debounced so a fold in progress doesn't spam the host.
+	private func followScreenChange(_ w: CGFloat, _ h: CGFloat) {
+		guard let screen = view.window?.screen else { return }
+		let screenSize = screen.fixedCoordinateSpace.bounds.size
+		defer { lastScreenSize = screenSize }
+		guard let last = lastScreenSize, last != screenSize, SettingsHandler.resolution == .client else { return }
+
+		let scale = screen.nativeScale
+		let pw = Int(w * scale), ph = Int(h * scale)
+		followScreenWork?.cancel()
+		let work = DispatchWorkItem {
+			ParsecResolution.updateClientResolution(width: pw, height: ph)
+			guard CParsec.getStatus() == PARSEC_OK else { return }
+			appNote("[stream] display changed, asking host for \(pw)x\(ph)")
+			DataManager.model.resolutionX = pw
+			DataManager.model.resolutionY = ph
+			CParsec.updateHostVideoConfig()
+		}
+		followScreenWork = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
 	}
 
 	override func viewDidAppear(_ animated: Bool) {
