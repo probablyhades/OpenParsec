@@ -3,8 +3,6 @@ import SwiftUI
 import ParsecSDK
 import os
 
-var appScheme: ColorScheme = .dark
-
 struct GLBData {
 	let SessionKeyChainKey = "OPStoredAuthData"
 }

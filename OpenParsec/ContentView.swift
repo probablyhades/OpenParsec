@@ -11,16 +11,15 @@ enum ViewType {
 struct ContentView: View {
 	@State var curView: ViewType = .login
 
-	let defaultTransition = AnyTransition.move(edge: .trailing)
-
 	var body: some View {
 		ZStack {
 			switch curView {
 				case .login:
 					LoginView(self)
+						.transition(.blurReplace)
 				case .main:
 					MainView(self)
-						.transition(defaultTransition)
+						.transition(.blurReplace)
 				case .parsec:
 					ParsecView(self)
 			case .test:
@@ -28,7 +27,8 @@ struct ContentView: View {
 			 }
 		}
 		.onAppear(perform: initApp)
-		.background(Rectangle().fill(Color.black).edgesIgnoringSafeArea(.all))
+		.background(Color.black.ignoresSafeArea())
+		.preferredColorScheme(.dark)
 	}
 
 	func retryRestore() {
@@ -38,6 +38,12 @@ struct ContentView: View {
 	}
 
 	func initApp() {
+		#if DEBUG
+		if DemoData.enabled {
+			curView = .main
+			return
+		}
+		#endif
 
 		// Check to see if we have old session data
 		if let data = loadFromKeychain(key: GLBDataModel.shared.SessionKeyChainKey) {
@@ -82,8 +88,6 @@ struct ContentView: View {
 	}
 }
 
-struct ContentView_Previews: PreviewProvider {
-	static var previews: some View {
-		ContentView()
-	}
+#Preview {
+	ContentView()
 }
