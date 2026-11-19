@@ -16,7 +16,7 @@ These are nightly builds from main. Tagged versions are on the [Releases](https:
 
 The .ipa works with AltStore, SideStore, LiveContainer and TrollStore. LiveContainer does not check sources for new builds. For updates, tap install in the source and replace the existing app to get the newest build.
 
-OpenParsec is built against iOS 14 and later.
+OpenParsec requires iOS 27 or later.
 
 OpenParsec will never support App Store distribution as it bundles the Parsec SDK, which can't be redistributed under App Store policies.
 

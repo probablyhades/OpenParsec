@@ -5,7 +5,11 @@ import AVFoundation
 
 struct ParsecStatusBar: View {
 	@Binding var showMenu: Bool
-	@State var metricInfo: String = "Loading..."
+	@State var metrics: [StreamMetric] = []
+	/// Safe area and iPhone Duo occlusions of the full-bleed stream.
+	var reserved: DuoReservedSpace = .none
+	/// Width taken by the open menu when it sits beside the readout (landscape).
+	var menuInset: CGFloat = 0
 	@Binding var showDCAlert: Bool
 	@Binding var DCAlertText: String
 	@Binding var isReconnecting: Bool
@@ -21,8 +25,10 @@ struct ParsecStatusBar: View {
 	let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 	let onSilentDisconnect: () -> Void
 
-	init(showMenu: Binding<Bool>, showDCAlert: Binding<Bool>, DCAlertText: Binding<String>, parsecViewController: ParsecViewController, isReconnecting: Binding<Bool>, connectionLost: Binding<Bool>, waitingForNetwork: Binding<Bool>, waitingForStream: Binding<Bool>, onSilentDisconnect: @escaping () -> Void) {
+	init(showMenu: Binding<Bool>, reserved: DuoReservedSpace, menuInset: CGFloat, showDCAlert: Binding<Bool>, DCAlertText: Binding<String>, parsecViewController: ParsecViewController, isReconnecting: Binding<Bool>, connectionLost: Binding<Bool>, waitingForNetwork: Binding<Bool>, waitingForStream: Binding<Bool>, onSilentDisconnect: @escaping () -> Void) {
 		_showMenu = showMenu
+		self.reserved = reserved
+		self.menuInset = menuInset
 		_showDCAlert = showDCAlert
 		_DCAlertText = DCAlertText
 		_isReconnecting = isReconnecting
@@ -34,22 +40,30 @@ struct ParsecStatusBar: View {
 	}
 
 	var body: some View {
-		// Overlay elements
-		if showMenu || SettingsHandler.alwaysShowStatus {
-			VStack {
-				Text(metricInfo)
-					.frame(minWidth: 200, maxWidth: .infinity, maxHeight: 20)
-					.multilineTextAlignment(.leading)
-					.font(.system(size: 10))
-					.lineSpacing(20)
-					.lineLimit(nil)
+		if (showMenu || SettingsHandler.alwaysShowStatus) && !metrics.isEmpty {
+			FlowLayout(spacing: 14, lineSpacing: 3) {
+				ForEach(metrics) { metric in
+					HStack(spacing: 4) {
+						Text(metric.label)
+							.foregroundStyle(.secondary)
+						Text(metric.value)
+							.monospacedDigit()
+					}
+				}
 			}
-			.background(Rectangle().fill(Color("BackgroundPrompt").opacity(0.75)))
-			.foregroundColor(Color("Foreground"))
-			.frame(maxHeight: .infinity, alignment: .top)
+			.font(.caption2.weight(.medium))
+			.padding(.horizontal, 14)
+			.padding(.vertical, 7)
+			.glassEffect(.regular, in: .rect(cornerRadius: 16))
+			// bottom centre: clear of the menu in the leading corner and of the sensor housing
+			.padding(.bottom, max(reserved.occlusion.bottom, 10))
+			.padding(.horizontal, max(reserved.safeArea.leading, reserved.safeArea.trailing, 16))
+			.padding(.leading, menuInset)
+			.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+			.allowsHitTesting(false)
+			.environment(\.colorScheme, .dark)
 			.zIndex(1)
-			.edgesIgnoringSafeArea(.all)
-
+			.accessibilityElement(children: .combine)
 		}
 		EmptyView()
 			.onReceive(timer) { _ in
@@ -58,8 +72,7 @@ struct ParsecStatusBar: View {
 	}
 
 	func holdFrame(_ hold: Bool) {
-		var pumping = false
-		if #available(iOS 15.0, *) { pumping = PictureInPictureManager.shared.isPumping }
+		let pumping = PictureInPictureManager.shared.isPumping
 		if hold {
 			frameHeld = true
 			if !pumping { ParsecBackgroundManager.shared.glkViewController?.isPaused = true }
@@ -88,10 +101,7 @@ struct ParsecStatusBar: View {
 		var pcs = ParsecClientStatus()
 		var status = CParsec.getStatusEx(&pcs)
 
-		var pipActive = false
-		if #available(iOS 15.0, *) {
-			pipActive = PictureInPictureManager.shared.isPiPActive
-		}
+		let pipActive = PictureInPictureManager.shared.isPiPActive
 		let offline = NetworkWatcher.shared.noNetwork
 
 		if waitingForNetwork {
@@ -244,12 +254,27 @@ struct ParsecStatusBar: View {
 		}
 
 		if showMenu || SettingsHandler.alwaysShowStatus {
-			let str = String.fromBuffer(&pcs.decoder.0.name.0, length: 16)
-			metricInfo = "Decode \(String(format: "%.2f", pcs.`self`.metrics.0.decodeLatency))ms    Encode \(String(format: "%.2f", pcs.`self`.metrics.0.encodeLatency))ms    Network \(String(format: "%.2f", pcs.`self`.metrics.0.networkLatency))ms    Bitrate \(String(format: "%.2f", pcs.`self`.metrics.0.bitrate))Mbps    RTx \(pcs.`self`.metrics.0.fastRTs + pcs.`self`.metrics.0.slowRTs)    Queue \(pcs.`self`.metrics.0.queuedFrames)    Draw \(String(format: "%.0f", CParsec.drawRate))fps \(CParsec.rendererName)    \(pcs.decoder.0.h265 ? "H265" : "H264") \(pcs.decoder.0.width)x\(pcs.decoder.0.height) \(pcs.decoder.0.color444 ? "4:4:4" : "4:2:0") \(str)"
+			let decoderName = String.fromBuffer(&pcs.decoder.0.name.0, length: 16)
+			let m = pcs.`self`.metrics.0
+			let d = pcs.decoder.0
+			metrics = [
+				StreamMetric(label: "Decode", value: String(format: "%.2f ms", m.decodeLatency)),
+				StreamMetric(label: "Encode", value: String(format: "%.2f ms", m.encodeLatency)),
+				StreamMetric(label: "Network", value: String(format: "%.2f ms", m.networkLatency)),
+				StreamMetric(label: "Bitrate", value: String(format: "%.2f Mbps", m.bitrate)),
+				StreamMetric(label: "RTx", value: "\(m.fastRTs + m.slowRTs)"),
+				StreamMetric(label: "Queue", value: "\(m.queuedFrames)"),
+				StreamMetric(label: "Draw", value: "\(String(format: "%.0f", CParsec.drawRate)) fps \(CParsec.rendererName)"),
+				StreamMetric(label: d.h265 ? "H.265" : "H.264", value: "\(d.width)×\(d.height) \(d.color444 ? "4:4:4" : "4:2:0") \(decoderName)")
+			]
 		}
 	}
+}
 
-
+struct StreamMetric: Identifiable {
+	var label: String
+	var value: String
+	var id: String { label }
 }
 
 // CRITICAL: This class exists to PERSIST the ParsecViewController instance across SwiftUI view updates.
@@ -275,8 +300,6 @@ struct ParsecView: View {
 
 	@State var showDCAlert: Bool = false
 	@State var DCAlertText: String = "Disconnected (reason unknown)"
-	@State var metricInfo: String = "Loading..."
-
 	@State var hideOverlay: Bool = false
 	@State var hideKeyboardButton: Bool = false
 	@AppStorage("keyboardHintShown") var keyboardHintShown: Bool = false
@@ -284,7 +307,8 @@ struct ParsecView: View {
 	@State var hint: String?
 	@State var showMenu: Bool = false
 	@State var menuRowsHeight: CGFloat = 0
-	@ScaledMetric var menuWidth: CGFloat = 230
+	@ScaledMetric var menuWidth: CGFloat = 270
+	@Namespace private var glass
 	@AppStorage("menuSwipeHintShown") var menuSwipeHintShown: Bool = false
 
 	@State var showKeyboard: Bool = false
@@ -343,165 +367,113 @@ struct ParsecView: View {
 
 			UIViewControllerWrapper(self.parsecViewController)
 				.zIndex(1)
-				.prefersPersistentSystemOverlaysHidden()
+				.persistentSystemOverlays(.hidden)
 
-			ParsecStatusBar(showMenu: $showMenu, showDCAlert: $showDCAlert, DCAlertText: $DCAlertText, parsecViewController: parsecViewController, isReconnecting: $isReconnecting, connectionLost: $connectionLost, waitingForNetwork: $waitingForNetwork, waitingForStream: $waitingForStream, onSilentDisconnect: { disconnect() })
-				.padding(.top, duoSpace.occlusion.top)
+			ParsecStatusBar(showMenu: $showMenu, reserved: duoSpace, menuInset: showMenu && verticalSizeClass == .compact ? menuWidth + 74 : 0, showDCAlert: $showDCAlert, DCAlertText: $DCAlertText, parsecViewController: parsecViewController, isReconnecting: $isReconnecting, connectionLost: $connectionLost, waitingForNetwork: $waitingForNetwork, waitingForStream: $waitingForStream, onSilentDisconnect: { disconnect() })
 
 			if isReconnecting || connectionLost || waitingForNetwork {
-				VStack(spacing: 12) {
-					if waitingForNetwork {
-						Image(systemName: "wifi.slash")
-							.font(.system(size: 34, weight: .medium))
-							.foregroundColor(.white)
-					} else if #available(iOS 26, *) {
-						ProgressView().controlSize(.large).tint(.white)
-					} else {
-						ActivityIndicator(isAnimating: .constant(true), style: .large, tint: .white)
-					}
-					Text(overlayTitle)
-						.font(.system(size: 16, weight: .medium))
-						.foregroundColor(.white)
-						.id(waitingForStream)
-						.transition(.opacity)
-					if waitingForNetwork {
-						Text("OpenParsec will reconnect when you're back online")
-							.font(.system(size: 13))
-							.foregroundColor(.white)
-							.opacity(0.7)
-					}
-					ActionButton("Close", prominent: false) { disconnect() }
-						.environment(\.colorScheme, .dark)
-						.padding(.top, 4)
-					if settingsStore.showConnectionLog {
-						ConnectionLogPanel()
-					}
+				StatusOverlay(
+					symbol: waitingForNetwork ? "wifi.slash" : isReconnecting ? "dot.radiowaves.left.and.right" : "wifi.exclamationmark",
+					animating: !waitingForNetwork,
+					title: overlayTitle,
+					message: waitingForNetwork ? "OpenParsec will reconnect when you're back online" : nil,
+					showLog: settingsStore.showConnectionLog,
+					overStream: true
+				) {
+					Button("Close") { disconnect() }
 				}
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
-				.background(Color.black.opacity(0.6))
 				.transition(.asymmetric(insertion: .identity, removal: .opacity))
 				.zIndex(10)
 			}
 
 			if dataModel.isBlocked {
-				Text("Host is using the machine")
-					.foregroundColor(.white)
-					.padding(.horizontal, 16)
-					.padding(.vertical, 10)
-					.glassPanel(cornerRadius: 20, fallback: Color("BackgroundPrompt").opacity(0.85))
+				toast("Host is using the machine", systemImage: "lock.fill")
 					.zIndex(3)
 			}
 
 			if let hint = hint {
-				Text(hint)
-					.multilineTextAlignment(.center)
-					.foregroundColor(.white)
-					.padding(.horizontal, 16)
-					.padding(.vertical, 10)
-					.glassPanel(cornerRadius: 20, fallback: Color("BackgroundPrompt").opacity(0.85))
+				toast(hint, systemImage: nil)
 					.padding(.top, showKeyboard ? 100 : 0)
 					.frame(maxHeight: .infinity, alignment: showKeyboard ? .top : .center)
 					.allowsHitTesting(false)
+					.transition(.opacity.combined(with: .scale(scale: 0.94)))
 					.zIndex(3)
 			}
 
-			HStack(alignment: .top, spacing: 0) {
-				VStack {
-					if !hideOverlay {
-						HStack {
-							Button(action: {
-								if showMenu {
-									showMenu = false
-								} else {
-									showMenu = true
-									ParsecView.getHostUserData()
-								}
-							}) {
-								if #available(iOS 26, *) {
-									Image("IconTransparent")
-										.resizable()
-										.aspectRatio(contentMode: .fit)
-										.frame(width: 48, height: 48)
-										.opacity(showMenu ? 1 : 0.5)
-										.glassControl(active: showMenu)
-								} else {
-									Image("IconTransparent")
-										.resizable()
-										.aspectRatio(contentMode: .fit)
-										.frame(width: 48, height: 48)
-										.background(Rectangle().fill(Color("BackgroundPrompt").opacity(showMenu ? 0.75 : 1)))
-										.cornerRadius(8)
-										.opacity(showMenu ? 1 : 0.25)
-								}
-							}
-							.accessibilityLabel(showMenu ? "Close Menu" : "Menu")
-							.padding()
-							.edgesIgnoringSafeArea(.all)
-							Spacer()
-						}
-					}
-					if !hideKeyboardButton {
-						HStack {
-							Button(action: toggleKeyboard) {
-								Image(systemName: "keyboard")
+			// The stream stays full-bleed; these controls float over it in one glass group.
+			GlassEffectContainer(spacing: 10) {
+				HStack(alignment: .top, spacing: 0) {
+					VStack(alignment: .leading, spacing: 10) {
+						if !hideOverlay {
+							Button(action: toggleMenu) {
+								Image("IconTransparent")
 									.resizable()
-									.aspectRatio(contentMode: .fit)
-									.frame(width: 32, height: 32)
-									.foregroundColor(Color("Foreground"))
-									.padding(8)
-									.glassControl(active: showKeyboard)
+									.scaledToFit()
+									.frame(width: 34, height: 34)
+									.opacity(showMenu ? 1 : 0.7)
+									.frame(width: 48, height: 48)
+									.contentShape(.circle)
 							}
+							.glassEffect(showMenu ? .regular.interactive() : .clear.interactive(), in: .circle)
+							.glassEffectID("menuButton", in: glass)
+							.accessibilityLabel(showMenu ? "Close Menu" : "Menu")
+						}
+						if !hideKeyboardButton {
+							Button(action: toggleKeyboard) {
+								Image(systemName: showKeyboard ? "keyboard.chevron.compact.down" : "keyboard")
+									.font(.system(size: 19, weight: .medium))
+									.contentTransition(.symbolEffect(.replace))
+									.frame(width: 48, height: 48)
+									.contentShape(.circle)
+							}
+							.glassEffect(showKeyboard ? .regular.interactive() : .clear.interactive(), in: .circle)
+							.glassEffectID("keyboardButton", in: glass)
 							.accessibilityLabel(showKeyboard ? "Hide Keyboard" : "Show Keyboard")
-							.padding(.leading)
-							.edgesIgnoringSafeArea(.all)
-							Spacer()
 						}
-					}
-					if showMenu && verticalSizeClass != .compact {
-						HStack {
+						if showMenu && verticalSizeClass != .compact {
 							menuPanel
-							Spacer()
+								.layoutPriority(1)
 						}
-						.layoutPriority(1)
 					}
-					Spacer()
-				}
-				.fixedSize(horizontal: showMenu && verticalSizeClass == .compact, vertical: false)
-				if showMenu && verticalSizeClass == .compact {
-					menuPanel
-						.padding(.top)
-					Spacer()
+					.fixedSize(horizontal: showMenu && verticalSizeClass == .compact, vertical: false)
+					if showMenu && verticalSizeClass == .compact {
+						menuPanel
+							.padding(.leading, 10)
+					}
+					Spacer(minLength: 0)
 				}
 			}
+			.buttonStyle(.plain)
+			.foregroundStyle(.white)
+			.environment(\.colorScheme, .dark)
+			.padding(16)
 			.padding(duoSpace.occlusion)
 			.frame(maxHeight: duoSpace.heightAboveFold(from: 0), alignment: .top)
 			.frame(maxHeight: .infinity, alignment: .top)
 			.zIndex(2)
 		}
 		.statusBarHidden(SettingsHandler.hideStatusBar)
-		.alert(isPresented: $showDCAlert) {
-			Alert(title: Text(DCAlertText),
-				  primaryButton: .default(Text("Reconnect"), action: {
-					guard let peerId = ParsecBackgroundManager.shared.lastPeerId else {
-						disconnect()
-						return
+		.alert(DCAlertText, isPresented: $showDCAlert) {
+			Button("Reconnect") {
+				guard let peerId = ParsecBackgroundManager.shared.lastPeerId else {
+					disconnect()
+					return
+				}
+				if NetworkWatcher.shared.noNetwork {
+					DispatchQueue.main.async {
+						DCAlertText = "No network connection"
+						showDCAlert = true
 					}
-					if NetworkWatcher.shared.noNetwork {
-						DispatchQueue.main.async {
-							DCAlertText = "No network connection"
-							showDCAlert = true
-						}
-						return
-					}
-					showDCAlert = false
-					reconnectTo(peerId)
-				  }),
-				  secondaryButton: .cancel(Text("Close"), action: {disconnect()}))
+					return
+				}
+				reconnectTo(peerId)
+			}
+			Button("Close", role: .cancel) { disconnect() }
 		}
-		.onChange(of: showSettings) { open in
+		.onChange(of: showSettings) { _, open in
 			if !open { applyStreamSettings() }
 		}
-		.onChange(of: isReconnecting) { reconnecting in
+		.onChange(of: isReconnecting) { _, reconnecting in
 			if !reconnecting {
 				CParsec.setMuted(muted)
 				if muted { CParsec.pause(video: false, audio: true) }
@@ -509,133 +481,141 @@ struct ParsecView: View {
 		}
 		.onAppear(perform: post)
 		.onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ParsecBackgroundDisconnect"))) { _ in
-			if #available(iOS 15.0, *) {
-				if PictureInPictureManager.shared.isPiPActive {
-					return
-				}
+			if PictureInPictureManager.shared.isPiPActive {
+				return
 			}
 			disconnect(isBackgroundDisconnect: true)
 		}
-		.edgesIgnoringSafeArea(.all)
+		.ignoresSafeArea()
 		.readDuoReservedSpace($duoSpace)
-		.settingsPresentation(isPresented: $showSettings)
+		.sheet(isPresented: $showSettings) {
+			SettingsView(inStream: true)
+				.preferredColorScheme(.dark)
+		}
+	}
 
+	func toast(_ text: String, systemImage: String?) -> some View {
+		HStack(spacing: 8) {
+			if let systemImage = systemImage {
+				Image(systemName: systemImage)
+					.foregroundStyle(.secondary)
+			}
+			Text(text)
+				.multilineTextAlignment(.center)
+		}
+		.font(.subheadline.weight(.medium))
+		.foregroundStyle(.white)
+		.padding(.horizontal, 18)
+		.padding(.vertical, 12)
+		.glassEffect(.regular, in: .rect(cornerRadius: 22))
+		.environment(\.colorScheme, .dark)
+		.padding(.horizontal, 24)
+	}
+
+	func toggleMenu() {
+		withAnimation(.smooth(duration: 0.3)) { showMenu.toggle() }
+		if showMenu { ParsecView.getHostUserData() }
 	}
 
 	var menuPanel: some View {
-		VStack(spacing: 3) {
+		VStack(spacing: 0) {
 			ScrollView {
-				VStack(spacing: 3) {
+				VStack(spacing: 0) {
 					Button(action: disableOverlay) {
 						menuRow("Hide Buttons", "eye.slash")
 					}
 					Button(action: toggleMute) {
-						menuRow("Sound: \(muted ? "OFF" : "ON")", muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+						menuRow("Sound", muted ? "speaker.slash.fill" : "speaker.wave.2.fill", value: muted ? "Off" : "On")
 					}
 					Menu {
 						ForEach(resolutions, id: \.self) { resolution in
-							Button(action: {
-								changeResolution(res: resolution)
-							}) {
-								if resolution.width == dataModel.resolutionX && resolution.height == dataModel.resolutionY {
-									Label(resolution.desc, systemImage: "checkmark")
-								} else {
-									Text(resolution.desc)
-								}
-							}
+							Toggle(resolution.desc, isOn: Binding(
+								get: { resolution.width == dataModel.resolutionX && resolution.height == dataModel.resolutionY },
+								set: { _ in changeResolution(res: resolution) }
+							))
 						}
 					} label: {
-						menuRow("Resolution", "rectangle.expand.diagonal")
+						menuRow("Resolution", "aspectratio", picker: true)
 					}
 					Menu {
-						Button(action: {
-							changeBitRate(bitrate: 0)
-						}) {
-							if settingsStore.bitrate == 0 {
-								Label("Host Default", systemImage: "checkmark")
-							} else {
-								Text("Host Default")
-							}
-						}
+						Toggle("Host Default", isOn: Binding(get: { settingsStore.bitrate == 0 }, set: { _ in changeBitRate(bitrate: 0) }))
 						ForEach(bitrates, id: \.self) { bitrate in
-							Button(action: {
-								changeBitRate(bitrate: bitrate)
-							}) {
-								if bitrate == settingsStore.bitrate {
-									Label("\(bitrate) Mbps", systemImage: "checkmark")
-								} else {
-									Text("\(bitrate) Mbps")
-								}
-							}
+							Toggle("\(bitrate) Mbps", isOn: Binding(get: { bitrate == settingsStore.bitrate }, set: { _ in changeBitRate(bitrate: bitrate) }))
 						}
 					} label: {
-						menuRow("Bitrate", "speedometer")
+						menuRow("Bitrate", "speedometer", value: settingsStore.bitrate == 0 ? "Default" : "\(settingsStore.bitrate) Mbps", picker: true)
 					}
-					if DataManager.model.displayConfigs.count > 1 {
+					if dataModel.displayConfigs.count > 1 {
 						Menu {
 							Button("Auto") {
 								changeDisplay(displayId: "none")
 							}
-							ForEach(DataManager.model.displayConfigs, id: \.self) { config in
+							ForEach(dataModel.displayConfigs, id: \.self) { config in
 								Button("\(config.name) \(config.adapterName)") {
 									changeDisplay(displayId: config.id)
 								}
 							}
 						} label: {
-							menuRow("Switch Display", "display.2")
+							menuRow("Switch Display", "display.2", picker: true)
 						}
 					}
-
 					Button(action: toggleConstantFps) {
-						menuRow("Constant Frame Rate: \(dataModel.constantFps ? "ON" : "OFF")", "film")
+						menuRow("Constant Frame Rate", "metronome", value: dataModel.constantFps ? "On" : "Off")
 					}
 					Button(action: toggleZoom) {
-						menuRow("Pinch to Zoom: \(zoomEnabled ? "ON" : "OFF")", "plus.magnifyingglass")
+						menuRow("Pinch to Zoom", "plus.magnifyingglass", value: zoomEnabled ? "On" : "Off")
 					}
 					Button(action: toggleTouchMode) {
-						menuRow("Touch Mode: \(settingsStore.cursorMode == .direct ? "Direct" : "Touchpad")", settingsStore.cursorMode == .direct ? "hand.point.up.left" : "rectangle.and.hand.point.up.left")
+						menuRow("Touch Mode", settingsStore.cursorMode == .direct ? "hand.point.up.left" : "rectangle.and.hand.point.up.left", value: settingsStore.cursorMode == .direct ? "Direct" : "Touchpad")
 					}
 					Button(action: openSettings) {
 						menuRow("Settings", "gear")
 					}
 				}
+				.padding(.top, 6)
 				.background(GeometryReader { proxy in
 					Color.clear.preference(key: MenuRowsHeightKey.self, value: proxy.size.height)
 				})
 			}
 			.frame(maxHeight: menuRowsHeight)
 			.onPreferenceChange(MenuRowsHeightKey.self) { menuRowsHeight = $0 }
-			Rectangle()
-				.fill(Color("Foreground"))
-				.opacity(0.25)
-				.frame(height: 1)
-			Button(action: { disconnect()}) {
-				menuRow("Disconnect", "xmark.circle")
-					.foregroundColor(.red)
+			Divider()
+				.padding(.horizontal, 16)
+			Button(role: .destructive, action: { disconnect() }) {
+				menuRow("Disconnect", "xmark.circle.fill")
+					.foregroundStyle(.red)
 			}
+			.padding(.bottom, 6)
 		}
-		.foregroundColor(Color("Foreground"))
-		.glassPanel(cornerRadius: 20)
+		.glassEffect(.regular, in: .rect(cornerRadius: 26))
+		.glassEffectID("menuPanel", in: glass)
 		.frame(maxWidth: menuWidth)
-		.padding(.horizontal)
-		// .edgesIgnoringSafeArea(.all)
 	}
 
-	/// Menu rows carry a symbol plus their title, so they read at a glance over the stream.
-	@ViewBuilder
-	func menuRow(_ title: String, _ systemImage: String) -> some View {
-		if #available(iOS 26, *) {
-			Label(title, systemImage: systemImage)
-				.frame(maxWidth: .infinity, alignment: .leading)
-				.padding(.horizontal, 14)
-				.padding(.vertical, 10)
-				.contentShape(Rectangle())
-		} else {
+	/// Menu rows carry a symbol, their title and the current value, so they read at a glance over the stream.
+	func menuRow(_ title: String, _ systemImage: String, value: String? = nil, picker: Bool = false) -> some View {
+		HStack(spacing: 12) {
+			Image(systemName: systemImage)
+				.font(.body)
+				.frame(width: 26)
 			Text(title)
-				.padding(8)
-				.frame(maxWidth: .infinity)
-				.multilineTextAlignment(.center)
+				.lineLimit(1)
+			Spacer(minLength: 8)
+			if let value = value {
+				Text(value)
+					.foregroundStyle(.secondary)
+					.lineLimit(1)
+			}
+			if picker {
+				Image(systemName: "chevron.up.chevron.down")
+					.font(.caption2.weight(.semibold))
+					.foregroundStyle(.tertiary)
+			}
 		}
+		.font(.subheadline)
+		.padding(.horizontal, 16)
+		.frame(minHeight: 44)
+		.contentShape(.rect)
 	}
 
 	var overlayTitle: String {
@@ -668,7 +648,7 @@ struct ParsecView: View {
 			reconnectTo(peerId)
 			ParsecBackgroundManager.shared.reconnectAttempts = 1
 		}
-		if #available(iOS 15.0, *) {
+		do {
 			PictureInPictureManager.shared.onPiPStopped = { [self] in
 				if UIApplication.shared.applicationState != .active {
 					ParsecBackgroundManager.shared.glkViewController?.isPaused = true
@@ -762,7 +742,7 @@ struct ParsecView: View {
 		bitrateAtOpen = SettingsHandler.bitrate
 		showMenu = false
 		if showKeyboard { toggleKeyboard() }
-		withAnimation(.easeInOut(duration: 0.24)) { showSettings = true }
+		showSettings = true
 	}
 
 	func applyStreamSettings() {
@@ -875,9 +855,7 @@ struct ParsecView: View {
 		ParsecBackgroundManager.shared.onEndedInBackground = nil
 		ParsecBackgroundManager.shared.onNextFrame = nil
 
-		if #available(iOS 15.0, *) {
-			PictureInPictureManager.shared.teardown()
-		}
+		PictureInPictureManager.shared.teardown()
 
 		CParsec.sendReleaseMessage()
 		CParsec.disconnect()
@@ -957,15 +935,4 @@ struct ParsecView: View {
 		CParsec.sendUserData(type: .getAdapterInfo, message: data)
 	}
 
-}
-
-// from https://github.com/utmapp/UTM/blob/117e3a962f2f46f7d847632d65fa7a85a2bb0cfa/Platform/iOS/VMWindowView.swift#L314
-private extension View {
-	func prefersPersistentSystemOverlaysHidden() -> some View {
-		if #available(iOS 16, *) {
-			return self.persistentSystemOverlays(.hidden)
-		} else {
-			return self
-		}
-	}
 }
